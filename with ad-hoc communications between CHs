@@ -1,0 +1,269 @@
+#-------------------------存档，完结版------------------
+#------------------------水下relay_node-------------------
+import numpy as np
+import random
+from scipy.spatial import distance
+import matplotlib.pyplot as plt
+
+l=4000  #No of bits to be transferred
+initial_energy=1            #In joule
+Eelec= 50 * (10 ** (-9))    #Electronic energy for node activity: 50nJ/bit
+Efs= 10 * (10 ** (-12))     #Energy dissipation in free space: 10 pJ/nit
+Emp=0.0013 * (10 ** (-12))  #Energy dissipation during multipath propagation: 0.0013 pJ/bit
+Eda=5 * (10 ** (-9))        # Data aggregation energy: 5nJ/bit
+
+def generate_points(n, x_max=100, y_max=100, z_max=100):
+    points = []
+    while len(points) < n:
+        x, y, z = random.uniform(0, x_max), random.uniform(0, y_max), random.uniform(0, z_max)
+        points.append((x, y, z))
+    return points
+
+def assign_clusters(points, centroids, bs, active_relay=None):
+    objective_value=0
+
+    # 计算每个簇头的 relay_energy
+    relay_energy = [0]*len(centroids)
+    for i in range(len(centroids)):
+        if active_relay and active_relay[i]:
+          for j in active_relay[i]:
+              relay_energy[i] = ch_energy(distance.euclidean(centroids[i], centroids[j])) + relay_energy[j]
+        else:
+            # 如果 active_relay[i] 为空，则直接计算簇头到基站的传输能量
+            relay_energy[i] = ch_energy(distance.euclidean(centroids[i], bs) )
+
+    sum_energy_between_clusters=sum(relay_energy)
+
+
+    # 计算每个簇头到基站的距离的平方和
+    distances_to_bs_squared = np.sum(np.square(centroids), axis=1)
+
+    # 按照距离基站的距离升序排列簇头的索引
+    sorted_indices = np.argsort(distances_to_bs_squared)
+
+    # Print the sorted centroids
+    centroids=np.array(centroids)
+    sorted_centroids = centroids[sorted_indices]
+
+    centroids=sorted_centroids
+
+    # 对排序后的簇头分配数据点
+    clusters = [[] for _ in centroids]
+    for point in points:
+        # 找到最近的簇头（根据排序后的顺序）
+        closest_centroid_idx = np.argmin([distance.euclidean(point, centroid) for centroid in centroids])
+        clusters[closest_centroid_idx].append(point)
+
+    #sum(每个簇头的能量)
+    pi_all = sum([non_ch_energy(distance.euclidean(point, centroids[idx])) for idx in range(len(centroids)) for point in clusters[idx]])
+
+    objective_value=pi_all+sum_energy_between_clusters
+
+    return centroids, clusters, pi_all, objective_value
+
+def non_ch_energy(d):
+  return l*Efs*(d**2)
+
+def ch_energy(d):
+  return l*Efs*(d**2)
+
+def aggregated_information_energy(n,k):
+  return l*Eelec*n*2 +l*Eda*n +l*Eelec*k
+
+def SCHA(points, centroids, clusters, bs=(0,0,0), active_relay=None, new_dict=None):
+    objective_values = []
+
+    new_centroids = []
+    for idx, cluster in enumerate(clusters):
+        weight_of_relay=1
+        cluster_points = np.array(cluster)
+        centroid_candidate = np.mean(cluster_points, axis=0)
+        weight = len(cluster_points)
+        whole_nodes = centroid_candidate * weight
+
+        # 处理relay关系，如果当前簇需要通过其他簇进行relay
+        if active_relay and idx in active_relay:
+            bs = centroids[idx]
+            # for relay_idx in active_relay[idx]:
+            #     bs = centroids[relay_idx]  # 将bs的坐标替换为相应的relay簇的坐标
+
+        if new_dict and idx in new_dict:
+            # 如果存在new_dict并且当前簇在字典中有对应关系
+            for neighbor, relay_count in new_dict[idx].items():
+                neighbor_centroid = centroids[neighbor]
+                # centroid_candidate += relay_count * neighbor_centroid
+                whole_nodes+=relay_count * neighbor_centroid
+                weight += relay_count
+                weight_of_relay+=relay_count
+
+        pCH = (whole_nodes + bs*weight_of_relay) / (weight + weight_of_relay)
+        new_centroids.append(tuple(pCH))
+
+    # if np.array_equal(new_centroids, centroids):
+    #     break
+        # centroids = new_centroids
+    return new_centroids
+
+
+def calculate_total_nodes(relay_relationships):
+  def dfs(node, graph, count):
+      for neighbor in graph[node]:
+        count[0] += 1
+        dfs(neighbor, graph, count)
+
+  total_nodes = {}
+  for node in relay_relationships:
+      count = [0]  # Use a mutable list to pass count by reference
+      dfs(node, relay_relationships, count)
+      total_nodes[node] = count[0]
+  return total_nodes
+
+#new_dict for updating the centroids
+def relay_nodes_dict(relay_relationships):
+    result = calculate_total_nodes(relay_relationships)
+    active_relay = {key: [k for k, v in relay_relationships.items() if key in v] for key in relay_relationships}
+    new_dict = {key: {neighbor: result[neighbor] + 1 for neighbor in value} for key, value in
+                relay_relationships.items() if value}
+    return active_relay,new_dict
+
+#
+def compare_energy(points,centroids,clusters,pi_all):
+    sum_energy_between_clusters=0
+
+    # 计算每个簇头到基站的传输能量
+    pi_f_tobs = [ch_energy(distance.euclidean(bs, centroids[idx]) ) for idx in range(len(centroids) )]
+
+    # 构建relay关系字典，例如：{1: [2], 2: [3, 4], 3: [5]} 表示1被2 relay，2被3和4 relay，3被5 relay
+    relay_relationships = {}
+    energy_between_clusters = []
+
+    for i in range(0, len(centroids)):
+        min_energy = pi_f_tobs[i]
+        relay_node = -1
+
+        for j in range(i):
+            relay_energy=ch_energy(distance.euclidean(centroids[i], centroids[j]) )+energy_between_clusters[j]["min_energy"]
+
+            if relay_energy < min_energy:
+                min_energy = relay_energy
+                relay_node = j
+
+        # 更新energy_between_clusters[j]的relay_node值
+        energy_between_clusters.append({"min_energy": min_energy, "relay_node": relay_node})
+        sum_energy_between_clusters+=energy_between_clusters[i]["min_energy"]
+
+        objective_value=pi_all+sum_energy_between_clusters
+
+        # 构建relay关系字典，用于递归计算total_nodes
+        relay_relationships[i] = []
+        if relay_node>=0:
+          relay_relationships[relay_node].append(i)
+
+#     print("relay_relationships",relay_relationships)
+
+#     active_relay,new_dict=relay_nodes_dict(relay_relationships)
+#     print(active_relay)
+#     print(new_dict)
+
+    return relay_relationships, objective_value
+
+
+def updating_nodes(points, centroids, bs, max_iter, x):
+    objective_value = None
+    objective_values = []
+    sum_energy_between_clusters=0
+    consecutive_increases = 0
+    active_relay=None
+
+    for iter_count in range(max_iter):
+        #assign and sort the centroids+ calculate the objective value
+        centroids, clusters, pi_all, objective_value=assign_clusters(points, centroids, bs, active_relay)
+        prev_objective_value = objective_value
+
+        # 比较直接与BS通信和经过其他node relay通信的能量
+        relay_relationships, objective_value = compare_energy(points, centroids, clusters, pi_all)
+        # objective_values.append(objective_value)
+
+        active_relay, new_dict = relay_nodes_dict(relay_relationships)
+
+        # 更新centroids的坐标
+        new_centroids = SCHA(points, centroids, clusters, bs, active_relay, new_dict)
+
+        if np.array_equal(new_centroids, centroids):
+          break
+        # centroids = new_centroids
+        centroids = np.array(new_centroids)
+
+#----------------------------------------------------------------------------------------------------------------
+        centroids, clusters, pi_all, objective_value = assign_clusters(points, centroids, bs, active_relay)
+#----------------------------------------------------------------------------------------------------------------
+
+        objective_values.append(objective_value)
+
+        # 判断是否需要重新开始迭代
+        if prev_objective_value is not None and objective_value > prev_objective_value:
+            consecutive_increases += 1
+            if consecutive_increases >= x:
+                # break
+                return updating_nodes(points, centroids, bs, max_iter, x)
+        else:
+            consecutive_increases = 0
+    return centroids, objective_value, objective_values
+
+
+def plot_objective_function(objective_values_list, n_init):
+    plt.figure(figsize=(8, 4))
+    for idx, objective_values in enumerate(objective_values_list):
+        plt.plot(objective_values, label=f"Initialization {idx + 1}")
+    plt.xlabel("Iteration")
+    plt.ylabel("Overall Energy Consumption(J)")
+    leg = plt.legend(loc="upper right", bbox_to_anchor=(1.05, 1.05), frameon=True, fontsize=12)
+    leg.get_frame().set_edgecolor("k")
+    plt.show()
+
+def main(n, k, max_iter, n_init, bs, x):
+    points = generate_points(n)
+    p_agg_info=aggregated_information_energy(n,k)
+
+    best_objective_value = None
+    best_centroids = None
+    best_init = None
+    objective_values_list = []
+
+
+    new_dict = None
+    active_relay = None
+
+    for i in range(n_init):
+        centroids = random.sample(points, k)
+        centroids, objective_value, objective_values=updating_nodes(points, centroids, bs, max_iter, x)
+
+        objective_value=objective_value+p_agg_info
+        objective_values = np.array(objective_values)
+        modified_objective_values = objective_values + p_agg_info
+        # print(p_agg_info,objective_values)
+
+        objective_values_list.append(modified_objective_values)
+
+        if best_objective_value is None or objective_value < best_objective_value:
+          best_objective_value = objective_value
+          best_centroids = centroids
+          best_init = i + 1
+
+    print(f"")
+    for idx, centroid in enumerate(best_centroids):
+      print(f" {idx + 1}: {centroid}")
+    print(f"\n {best_init} ")
+    print("best_objective_value",best_objective_value)
+    plot_objective_function(objective_values_list, n_init)
+    # plot_objective_function(energy_consumption_list, n_init)
+
+
+n = 500  # 数据点个数
+k = 5     # 聚类中心个数
+max_iter = 50  # 算法的最大迭代次数
+n_init = 8  # 总共运行的迭代次数
+bs = (0, 0, 0)     # bs参数
+x = 10     # 连续增加x次时重新开始迭代
+
+main(n, k, max_iter, n_init, bs, x)
