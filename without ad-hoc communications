@@ -1,0 +1,154 @@
+import numpy as np
+import random
+from scipy.spatial import distance
+import matplotlib.pyplot as plt
+
+l=4000  #No of bits to be transferred
+initial_energy=1            #In joule
+Eelec= 50 * (10 ** (-9))    #Electronic energy for node activity: 50nJ/bit
+Efs= 10 * (10 ** (-12))     #Energy dissipation in free space: 10 pJ/nit
+Emp=0.0013 * (10 ** (-12))  #Energy dissipation during multipath propagation: 0.0013 pJ/bit
+Eda=5 * (10 ** (-9))        # Data aggregation energy: 5nJ/bit
+
+# Eelec= 50     #Electronic energy for node activity: 50nJ/bit
+# Efs= 10 * (10 ** (-3))     #Energy dissipation in free space: 10 pJ/nit
+# Eda=5        # Data aggregation energy: 5nJ/bit
+
+
+#3D
+
+def generate_points(n, x_max=100, y_max=100, z_max=100):
+    points = []
+    while len(points) < n:
+        x, y, z = random.uniform(0, x_max), random.uniform(0, y_max), random.uniform(0, z_max)
+        points.append((x, y, z))
+    return points
+
+def assign_clusters(points, centroids, bs, n,k):
+  objective_value = None
+  clusters = [[] for _ in centroids]
+  for point in points:
+    closest_centroid_idx = np.argmin([distance.euclidean(point, centroid) for centroid in centroids])
+    clusters[closest_centroid_idx].append(point)
+
+  pi_all=l*Efs*sum([distance.euclidean(point, centroids[idx]) ** 2 for idx in range(len(centroids)) for point in clusters[idx]])
+  sum_energy_between_clusters=l*Efs*sum([distance.euclidean(bs, centroids[idx]) ** 2 for idx in range(len(centroids))])
+  objective_value=pi_all+sum_energy_between_clusters
+
+  # print("pi_all",pi_all)
+  # print("sum_energy_between_clusters",sum_energy_between_clusters)
+  # print(objective_value)
+
+  #--------------------------------------------------------------------------
+  objective_value=l*(Eelec+Eda)*n+l*Eelec*(n+k)+objective_value
+ 
+  #------------------------------------------------------------------------
+
+  return clusters, objective_value
+
+def SCHA(points, clusters, bs):
+    # objective_value = None
+    # objective_values = []
+    for _ in range(max_iter):
+        new_centroids = []
+        for idx, cluster in enumerate(clusters):
+            cluster_points = np.array(cluster)
+            centroid_candidate = np.mean(cluster_points, axis=0)
+            weight = len(cluster_points)
+            pCH = (weight * centroid_candidate + bs) / (weight + 1)
+            new_centroids.append(tuple(pCH))
+        # if new_centroids == centroids:
+        #     break
+        # centroids = new_centroids
+
+        # prev_objective_value = objective_value
+        # objective_value = sum([distance.euclidean(point, centroids[closest_centroid_idx]) ** 2 for point in points for closest_centroid_idx in range(len(centroids))])
+        # +sum([distance.euclidean(bs, centroids[closest_centroid_idx]) ** 2 for closest_centroid_idx in range(len(centroids))])
+        # #--------------------------------------------------------------------------
+        # objective_value=l*(Eelec+Eda)*n+l*Eelec*(n+1)+l*Efs*objective_value
+        # #------------------------------------------------------------------------
+
+
+    return new_centroids
+
+
+def updating_nodes(points, centroids, bs, max_iter, x):
+    objective_value = None
+    objective_values = []
+    sum_energy_between_clusters=0
+    consecutive_increases = 0
+
+    for iter_count in range(max_iter):
+        #assign and sort the centroids+ calculate the objective value
+        clusters, objective_value=assign_clusters(points, centroids, bs, n,k)
+        prev_objective_value = objective_value
+
+        # 更新centroids的坐标
+        new_centroids = SCHA(points, clusters, bs)
+
+        if np.array_equal(new_centroids, centroids):
+          break
+        centroids = new_centroids
+        centroids = np.array(new_centroids)
+
+#----------------------------------------------------------------------------------------------------------------
+        clusters, objective_value=assign_clusters(points, centroids, bs, n,k)
+#----------------------------------------------------------------------------------------------------------------
+
+        objective_values.append(objective_value)
+
+        # 判断是否需要重新开始迭代
+        if prev_objective_value is not None and objective_value > prev_objective_value:
+            consecutive_increases += 1
+            if consecutive_increases >= x:
+                # break
+                return updating_nodes(points, centroids, bs, max_iter, x)
+        else:
+            consecutive_increases = 0
+    return centroids, objective_value, objective_values
+
+def plot_objective_function(objective_values_list, n_init):
+    plt.figure(figsize=(8, 4))
+    for idx, objective_values in enumerate(objective_values_list):
+        plt.plot(objective_values, label=f"Initialization {idx + 1}")
+    plt.xlabel("Iteration")
+    plt.ylabel("Overall Energy Consumption(J)")
+    leg = plt.legend(loc="upper right", bbox_to_anchor=(1.05, 1.05), frameon=True, fontsize=12)
+    leg.get_frame().set_edgecolor("k")
+    plt.show()
+
+def main(n, k, max_iter, n_init, bs, x):
+  points = generate_points(n)
+  best_objective_value = None
+  best_centroids = None
+  best_init = None
+  objective_values_list = []
+
+  for i in range(n_init):
+      centroids = random.sample(points, k)
+      centroids, objective_value, objective_values = updating_nodes(points, centroids, bs, max_iter, x)
+      objective_values_list.append(objective_values)
+      # print(objective_values_list)
+
+      if best_objective_value is None or objective_value < best_objective_value:
+        best_objective_value = objective_value
+        best_centroids = centroids
+        best_init = i + 1
+
+  print(f"")
+  for idx, centroid in enumerate(best_centroids):
+    print(f" {idx + 1}: {centroid}")
+  print(f"\n {best_init} ")
+  print("best_objective_value",best_objective_value)
+  plot_objective_function(objective_values_list, n_init)
+
+# 调用main函数
+n = 500 # 数据点个数
+k = 5      # 聚类中心个数
+max_iter = 50  # SCHA算法的最大迭代次数
+n_init = 8  # 总共运行的迭代次数
+bs = (0, 0, 0)     # bs参数
+x = 10     # 连续增加x次时重新开始迭代
+
+main(n, k, max_iter, n_init, bs, x)
+
